@@ -1,0 +1,140 @@
+---
+title: "Machine Learning Project"
+author: "Beijinger"
+date: "Friday, June 12, 2015"
+output: html_document
+---
+
+###1. Load, read and store the data:
+
+```{r}
+setInternet2(use = TRUE)
+
+dataset_url1 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+dataset_url2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+if (!file.exists("pml-training.csv")){download.file(dataset_url1,"pml-training.csv")}
+download.file(dataset_url2,"pml-testing.csv")
+
+pml.training <- read.csv("pml-training.csv")
+pml.testing <- read.csv("pml-testing.csv")
+```
+
+Training set has 19622 observations of 160 variables. Testing set has 20 observations of 160 variables. Instead of `classe` variable, testing set has `problem_id` as a placeholder.
+
+###2.Clean the data:
+
+There are 100 columns filled solely with NAs in the testing dataset:
+
+```{r}
+sum(colSums(is.na(pml.testing)) == nrow(pml.testing))
+```
+
+Lets remove them from both sets:
+
+```{r}
+pml.training <- pml.training[,colSums(is.na(pml.testing)) != nrow(pml.testing)]
+pml.testing <- pml.testing[,colSums(is.na(pml.testing)) != nrow(pml.testing)]
+```
+
+First 7 columns are identifiers and timestamps and will not be considered as inputs to the model.
+
+```{r}
+pml.training <- pml.training[,-(1:7)]
+pml.testing <- pml.testing[,-(1:7)]
+dim(pml.training)
+```
+
+Thus we are left with 52 predictors and a `classe` factor to predict.
+
+###3. Pre-processing the data:
+
+Lets check variance of predictors:
+
+```{r, message=FALSE}
+library(caret)
+sum(nearZeroVar(pml.training,saveMetrics=TRUE)$nzv)
+```
+
+No variables get weeded out by `nzv`. Quoting from the creators of random forests method:
+
+"In random forests, there is no need for cross-validation or a separate test set to get an unbiased estimate of the test set error. It is estimated internally, during the run..." ([here](http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm))
+
+
+Pre-processing the data (last column `classe` is taken out) with PCA method (pre-process done on training set is then applied to training and testing sets). 
+
+```{r}
+prepr.obj <- preProcess(pml.training[,-53],method=c("pca"),thresh=0.90)
+training.pp <- predict(prepr.obj, pml.training[,-53])
+testing.pp <- predict(prepr.obj, pml.testing[,-53])
+training.pp$classe <- pml.training$classe
+```
+ PCA method needed just 19 components to capture requested 90% of variance (formed out of initial 52 variables). We are ready to model. 
+ 
+###4. Modeling
+
+Best model choice for the dataset in consideration turned out to be Random Forests.
+
+```{r, cache=TRUE, message=FALSE, eval=TRUE}
+library(randomForest)
+library(doParallel)
+
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+set.seed(8128)
+
+modFit <- train(classe ~., method="rf", data=training.pp, allowParallel = TRUE)
+```
+```{r}
+modFit$finalModel
+```
+OOB estimate of  error rate is 1.68%. Lets run the model on testing set:
+
+```{r, eval=FALSE}
+answers <- predict(modFit, testing.pp)
+```
+
+19/20 correct.
+
+###5. Analysis and Summary
+
+Let us investigate how far we can simplify the model while still having decent test results and OOB error estimate. Simplification will be implemented by lowering threshold in `preProcess` from current 90% (i.e. PCA method was instructed to keep just enough variables to capture 90% of data variance) all the way down to 45%, checking on new (lower) number of PCA components, new (higher) error rate and (worse) test result. 
+
+Following table summarizes results:
+
+```{r,echo=FALSE}
+RFtable<-data.frame(matrix(NA,ncol=4,nrow=6))
+colnames(RFtable)<-c("PCA threshold, %", "# of components", "OOB error, %", "Test result")
+RFtable[,1]<-c(90,80,70,60,50,45)
+RFtable[,2]<-c(19,12,9,6,5,4)
+RFtable[,3]<-c(1.68,2.63,3.28,8.59,13.02,20.62)
+RFtable[,4]<-c("19/20","19/20","18/20","20/20","18/20","18/20")
+```
+
+
+```{r, echo=FALSE}
+library(knitr)
+#library(xtable)
+kable(RFtable)
+```
+ 
+ So number of predictors drops quickly, as expected, error rate crawls higher but remains under 10% even with just 6 predictors (out of initial 52!). Test results are quite steady - with a fluke of 100% for a 60% threshold case. Just based on test results - if 4 predictors give you 90% score - who needs 52 variables we started with? I don't have a good explanation as to why test results stay so high while OOB error worsens - is the test set too "special"? too "short"? 
+- is error estimate too conservative?
+I also don't have enough experience to judge whether training dataset is "special" in correlation sense - is it typical for a dataset with 52 variables to have 80% of variance explained by just 12 PCA components and 60% - by just 6? Clearly this project allows for massive dimensional reduction without significant information or model predictive power loss. 
+
+```{r,echo=FALSE, eval=FALSE}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(answers)
+```
+
+
+
+
+ 
+
